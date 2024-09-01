@@ -1,0 +1,217 @@
+Clear[m1, m2, m3, c2, c3, c5, k2, k3, k5, q1, q2, q3]
+
+MCKvalues = {m1 -> 8, m2 -> 2, m3 -> 5, c2 -> 15, c3 -> 20, c5 -> 10, k2 -> 1200, k3 -> 1500, k5 -> 2400};
+ICs = {q10 -> 0, q20 -> 0.03, q30 -> 0, q1dot0 -> 0, q2dot0 -> 0, q3dot0 -> 0};
+
+MM = {{m1, 0, 0}, {0, m2, 0}, {0, 0, m3}};
+CC = {{c2 + c5, -c2, -c5}, {-c2, c2 + c3, -c3}, {-c5, -c3, c3 + c5}};
+KK = {{k2 + k5, -k2, -k5}, {-k2, k2 + k3, -k3}, {-k5, -k3, k3 + k5}};
+
+Print["---Mass, damping, and stiffness matrices---"];
+MMn = MM /. MCKvalues;
+CCn = CC /. MCKvalues;
+KKn = KK /. MCKvalues;
+
+{MatrixForm[MMn], MatrixForm[CCn], MatrixForm[KKn]}
+
+Chop[Eigensystem[N[KKn]]];
+
+q0 = {{q10}, {q20}, {q30}} /. ICs;
+q0dot = {{q1dot0}, {q2dot0}, {q3dot0}} /. ICs;
+
+Print["---The normalized RB modal vector---"];
+u = NullSpace[KKn][[1]];
+u0 = u / Sqrt[u . MMn . u];
+u0 = N[u0];
+
+eq1 = u0 . MMn . {q1, q2, q3};
+temp1 = Simplify[Solve[eq1 == 0, q3]];
+
+c31 = q3 /. (temp1[[1]] /. {q2 -> 0});
+c32 = q3 /. (temp1[[1]] /. {q1 -> 0});
+
+Cstr = {{1, 0}, {0, 1}, {Chop[c31] / q1, Chop[c32] / q2}};
+Print["---The constraint matrix, with q3 eliminated---"];
+MatrixForm[Cstr];
+
+MMp = Transpose[Cstr] . MMn . Cstr;
+CCp = Transpose[Cstr] . CCn . Cstr;
+KKp = Transpose[Cstr] . KKn . Cstr;
+
+{MatrixForm[MMp], MatrixForm[CCp], MatrixForm[KKp]}
+
+uQimpulse = u0 . {1, 0, 0};
+uQstep = u0 . {1/s, 0, 0};
+damping = Chop[u0 . CCn . u0];
+
+\[Beta]solImpulse = InverseLaplaceTransform[uQimpulse / (s^2 + damping s), s, t];
+\[Beta]solStep = InverseLaplaceTransform[uQstep / (s^2 + damping s), s, t];
+
+{\[Beta]solImpulse, \[Beta]solStep}
+
+qRBimpulse = Chop[Simplify[\[Beta]solImpulse u0]];
+qRBstep = Chop[Simplify[\[Beta]solStep u0]];
+
+q0NRB = q0 - (u0 . MMn . q0)[[1]] u0;
+qdot0NRB = q0dot - (u0 . MMn . q0dot)[[1]] u0;
+
+O2 = {{0, 0}, {0, 0}};
+I2 = IdentityMatrix[2];
+
+MMinv = Inverse[MMp];
+mm3 = -MMinv . KKp;
+mm4 = -MMinv . CCp;
+
+A = {
+  Join[O2[[1]], I2[[1]]],
+  Join[O2[[2]], I2[[2]]],
+  Join[mm3[[1]], mm4[[1]]],
+  Join[mm3[[2]], mm4[[2]]]
+};
+
+B = {O2[[1]], O2[[2]], MMinv[[1]], MMinv[[2]]};
+Print["---B---"];
+MatrixForm[B];
+
+{vals, vecs} = Chop[Simplify[Eigensystem[N[A]]]];
+yi = Transpose[Inverse[vecs]];
+Clear[lambda];
+
+lambda = {vals[[3]], vals[[4]], vals[[1]], vals[[2]]};
+x1 = vecs[[3]];
+x2 = vecs[[4]];
+x3 = vecs[[1]];
+x4 = vecs[[2]];
+y1 = yi[[3]];
+y2 = yi[[4]];
+y3 = yi[[1]];
+y4 = yi[[2]];
+
+YT = {y1, y2, y3, y4};
+X = Transpose[{x1, x2, x3, x4}];
+MatrixForm[{{x1, x2, x3, x4}}];
+MatrixForm[{{y1, y2, y3, y4}}];
+Chop[YT.X] // MatrixForm 
+Chop[YT.A.X]// MatrixForm
+Ediag = {
+  {Exp[lambda[[1]] t], 0, 0, 0},
+  {0, Exp[lambda[[2]] t], 0, 0},
+  {0, 0, Exp[lambda[[3]] t], 0},
+  {0, 0, 0, Exp[lambda[[4]] t]}
+};
+
+x0 = {
+  {q0NRB[[1]]},
+  {q0NRB[[2]]},
+  {qdot0NRB[[1]]},
+  {qdot0NRB[[2]]}
+};
+
+xt = X . Ediag . YT . x0;
+xtt = Chop[Simplify[Chop[ComplexExpand[xt]]]];
+qNRB = Simplify[Cstr . {xtt[[1]], xtt[[2]]}];
+(* Definición de Ediagt\[Tau] usando los valores ajustados/sincronizados con los eigenvectores *)
+EdiagtTau = {
+  {Exp[lambda[[1]] (t - \[Tau])], 0, 0, 0},
+  {0, Exp[lambda[[2]] (t - \[Tau])], 0, 0},
+  {0, 0, Exp[lambda[[3]] (t - \[Tau])], 0},
+  {0, 0, 0, Exp[lambda[[4]] (t - \[Tau])]}
+};
+
+(* Integrar la integral de convolución; q3 fue eliminado en Cstr *)
+\[Phi]tTau = X . EdiagtTau . YT;
+StQ = Transpose[Cstr] . {1, 0, 0};
+
+(* Impulso y excitaciones de paso *)
+xImpulse = Chop[Simplify[ComplexExpand[X . Ediag . YT] . B . StQ]];
+xStep0 = Integrate[\[Phi]tTau . B . StQ, {\[Tau], 0, t}];
+xStep = Chop[ComplexExpand[xStep0]];
+
+Print["---qNRB: Parte NRB de la respuesta de vibración de IMPULSO ---"]
+qNRBimpulse = Simplify[Cstr . {xImpulse[[1]], xImpulse[[2]]}];
+impPlot1 = Plot[
+ {qNRBimpulse[[1]], qNRBimpulse[[2]], qNRBimpulse[[3]]}, 
+  {t, 0, 1}, 
+  PlotStyle -> {Red, Blue, Green}, 
+  AxesLabel -> {t, "response"}, 
+  PlotRange -> Automatic, 
+  Frame -> True, 
+  GridLines -> Automatic
+]
+
+Print["---qNRB: Parte NRB de la respuesta de vibración de PASO ---"]
+qNRBstep = Simplify[Cstr . {xStep[[1]], xStep[[2]]}];
+stepPlot1 = Plot[
+  {qNRBstep[[1]], qNRBstep[[2]], qNRBstep[[3]]}, 
+  {t, 0, 1}, 
+  PlotStyle -> {Red, Blue, Green}, 
+  AxesLabel -> {t, "response"}, 
+  PlotRange -> Automatic, 
+  Frame -> True, 
+  GridLines -> Automatic
+]
+
+StQ = Transpose[Cstr] . {1, 0, 0};
+(* Cálculo de nn *)
+nn = YT . B . StQ; 
+(* Transformaciones de InverseLaplace *)
+\[Xi]1 = ComplexExpand[InverseLaplaceTransform[(nn[[1]])/(s - lambda[[1]]), s, t]];
+\[Xi]2 = ComplexExpand[InverseLaplaceTransform[(nn[[2]])/(s - lambda[[2]]), s, t]]; 
+\[Xi]3 = ComplexExpand[InverseLaplaceTransform[(nn[[3]])/(s - lambda[[3]]), s, t]];
+\[Xi]4 = ComplexExpand[InverseLaplaceTransform[(nn[[4]])/(s - lambda[[4]]), s, t]]; 
+(* Cálculo de xximp *) 
+xximp = Chop[ComplexExpand[X . {\[Xi]1, \[Xi]2, \[Xi]3, \[Xi]4}]]; 
+(* Simplificación y graficación de la respuesta de vibración de impulso *) 
+qNRBimpulse2 = Simplify[Cstr . {xximp[[1]], xximp[[2]]}]; 
+impPlot2 = Plot[ {qNRBimpulse2[[1]], qNRBimpulse2[[2]], qNRBimpulse2[[3]]}, 
+{t, 0, 1}, PlotStyle -> {Red, Blue, Green}, AxesLabel -> {t, "response"}, PlotRange -> Automatic, Frame -> True, GridLines -> Automatic ]
+
+(* Impresión de mensaje de método HIIL para respuesta de impulso *)
+Print["---METHOD HIIL: The overall IMPULSE response @q1, q2, q3D---"];
+
+(* Cálculo de la respuesta de impulso total *)
+qIMPULSE = qRBimpulse + qNRBimpulse2;
+
+(* Impresión de mensaje de método HIIL para graficar respuesta de impulso *)
+Print["---METHOD HIIL: Plot of IMPULSE response Hq1 in red, q2 in blue, q3 in greenL---"];
+
+(* Gráfica de la respuesta de impulso *)
+ImpulseRspPlot = Plot[
+  {qIMPULSE[[1]], qIMPULSE[[2]], qIMPULSE[[3]]},
+  {t, 0, 0.4},
+  PlotStyle -> {Red, Blue, Green},
+  AxesLabel -> {t, "response"},
+  PlotRange -> Automatic,
+  Frame -> True,
+  GridLines -> Automatic
+];
+
+(* Mostrar la gráfica de respuesta de impulso *)
+ImpulseRspPlot
+
+(* Impresión de mensaje de método HIIL para respuesta de escalón *)
+Print["---METHOD HIIL: The overall STEP response @q1, q2, q3D---"];
+
+(* Cálculo de la respuesta de escalón total *)
+qSTEP = qRBstep + qNRBstep2;
+
+(* Impresión de mensaje de método HIIL para graficar respuesta de escalón *)
+Print["---METHOD HIIL: Plot of STEP response Hq1 in red, q2 in blue, q3 in greenL---"];
+
+(* Gráfica de la respuesta de escalón *)
+StepRspPlot = Plot[
+  {qSTEP[[1]], qSTEP[[2]], qSTEP[[3]]},
+  {t, 0, 0.25},
+  PlotStyle -> {Red, Blue, Green},
+  AxesLabel -> {t, "response"},
+  PlotRange -> Automatic,
+  Frame -> True,
+  GridLines -> Automatic
+];
+
+(* Mostrar la gráfica de respuesta de escalón *)
+StepRspPlot
+
+(* Evaluación de las respuestas en t = 0 *)
+Chop[qIMPULSE /. t -> 0]
+Chop[qSTEP /. t -> 0]
